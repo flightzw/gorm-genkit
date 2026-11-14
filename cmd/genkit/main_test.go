@@ -38,6 +38,9 @@ func TestConfigAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	params.revise()
+	if params.SoftDelete == nil || params.SoftDelete.Column != "deleted_at" || params.SoftDelete.Type != "gorm.DeletedAt" {
+		t.Fatalf("unexpected default soft delete config: %+v", params.SoftDelete)
+	}
 	if params.DB != "sqlite" || params.DSN != "config.db" || params.OutPath != defaultQueryPath || len(params.Tables) != 1 || params.Tables[0] != "users" || params.DataTypeMap["text"] != "custom.Label" {
 		t.Fatalf("unexpected config: %+v", params)
 	}
@@ -46,10 +49,13 @@ func TestConfigAndFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	params.revise()
+	if params.SoftDelete == nil || params.SoftDelete.Column != "deleted_at" || params.SoftDelete.Type != "gorm.DeletedAt" {
+		t.Fatalf("unexpected CLI soft delete default: %+v", params.SoftDelete)
+	}
 	if params.DB != "mysql" || !params.OnlyModel || strings.Join(params.Tables, ",") != "users,orders" {
 		t.Fatalf("unexpected flags: %+v", params)
 	}
-	for _, name := range []string{"dataTypeMap", "importPkgPaths"} {
+	for _, name := range []string{"dataTypeMap", "importPkgPaths", "softDelete"} {
 		fs := flag.NewFlagSet("test", flag.ContinueOnError)
 		fs.SetOutput(&bytes.Buffer{})
 		if _, err := parseArgs(fs, []string{"-" + name, "text:string"}); err == nil {
@@ -64,16 +70,20 @@ func TestConfigAndFlags(t *testing.T) {
 func TestInvalidConfig(t *testing.T) {
 	unsetTestEnv(t, "GENKIT_DB", "GENKIT_DSN")
 	for name, content := range map[string]string{
-		"missing database":  "version: '1'",
-		"invalid yaml":      "database: [",
-		"unknown field":     "database: {dataTypeMaps: {text: string}}",
-		"empty db type":     "database: {dataTypeMap: {'': string}}",
-		"empty go type":     "database: {dataTypeMap: {text: ''}}",
-		"invalid go type":   "database: {dataTypeMap: {text: 'foo()'}}",
-		"alias declaration": "database: {dataTypeMap: {text: '= string'}}",
-		"extra declaration": "database:\n  dataTypeMap:\n    text: |\n      string\n      var x int\n",
-		"empty import":      "database: {importPkgPaths: ['']}",
-		"invalid import":    "database: {importPkgPaths: ['bad\"path']}",
+		"missing database":           "version: '1'",
+		"invalid yaml":               "database: [",
+		"unknown field":              "database: {dataTypeMaps: {text: string}}",
+		"empty db type":              "database: {dataTypeMap: {'': string}}",
+		"empty go type":              "database: {dataTypeMap: {text: ''}}",
+		"invalid go type":            "database: {dataTypeMap: {text: 'foo()'}}",
+		"alias declaration":          "database: {dataTypeMap: {text: '= string'}}",
+		"extra declaration":          "database:\n  dataTypeMap:\n    text: |\n      string\n      var x int\n",
+		"empty import":               "database: {importPkgPaths: ['']}",
+		"invalid import":             "database: {importPkgPaths: ['bad\"path']}",
+		"empty soft delete":          "database: {softDelete: {}}",
+		"invalid soft delete type":   "database: {softDelete: {type: 'foo()'}}",
+		"invalid soft delete column": "database: {softDelete: {column: ' ', type: gorm.DeletedAt}}",
+		"unknown soft delete option": "database: {softDelete: {field: deleted_at, type: gorm.DeletedAt}}",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "gen.yml")
@@ -102,12 +112,27 @@ func TestInvalidConfig(t *testing.T) {
 // Exercise the entire file-config -> schema -> generated model/query flow, then
 // compile the generated code in a separate module, including a custom package.
 func TestGenerateWithTypeMapping(t *testing.T) {
-	for _, onlyModel := range []bool{true, false} {
-		name := "query"
-		if onlyModel {
-			name = "model"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		onlyModel  bool
+		softDelete *SoftDeleteConfig
+		column     string
+		field      string
+		wantType   string
+		dbType     string
+	}{
+		{"model", true, &SoftDeleteConfig{Type: "gorm.DeletedAt"}, "deleted_at", "DeletedAt", "gorm.DeletedAt", "datetime"},
+		{"query", false, &SoftDeleteConfig{Column: "archived_at", Type: "ct.DeletedAt"}, "archived_at", "ArchivedAt", "ct.DeletedAt", "datetime"},
+		{"unconfigured", false, nil, "deleted_at", "DeletedAt", "gorm.DeletedAt", "datetime"},
+		{"integer mapped", false, nil, "deleted_at", "DeletedAt", "*uint32", "integer"},
+		{"text mapped", true, nil, "deleted_at", "DeletedAt", "*ct.Label", "text"},
+		{"numeric default", false, nil, "deleted_at", "DeletedAt", "*int32", "numeric"},
+		{"explicit builtin fallback", false, &SoftDeleteConfig{Type: "*gorm.DeletedAt"}, "deleted_at", "DeletedAt", "*uint32", "integer"},
+		{"custom integer override", false, &SoftDeleteConfig{Type: "uint64"}, "deleted_at", "DeletedAt", "uint64", "integer"},
+		{"time without date default", false, nil, "deleted_at", "DeletedAt", "*time.Time", "time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			onlyModel := tc.onlyModel
 			dir := t.TempDir()
 			dsn := filepath.Join(dir, "schema.db")
 			db, err := gorm.Open(sqlite.Open(dsn))
@@ -118,7 +143,7 @@ func TestGenerateWithTypeMapping(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, statement := range []string{
-				"CREATE TABLE users (id integer PRIMARY KEY NOT NULL, name text NOT NULL, age integer NOT NULL, active numeric NOT NULL, optional text, note blob)",
+				"CREATE TABLE users (id integer PRIMARY KEY NOT NULL, name text NOT NULL, age integer NOT NULL, active numeric NOT NULL, optional text, note blob, created_at datetime, " + tc.column + " " + tc.dbType + " DEFAULT CURRENT_TIMESTAMP)",
 				"CREATE TABLE ignored (id integer PRIMARY KEY)",
 			} {
 				if err := db.Exec(statement).Error; err != nil {
@@ -137,13 +162,15 @@ func TestGenerateWithTypeMapping(t *testing.T) {
 				}
 				writeFile(t, filepath.Join(dir, file), strings.Replace(string(content), "module github.com/flightzw/gorm-genkit", "module example.com/generated", 1))
 			}
-			writeFile(t, filepath.Join(dir, "custom", "label.go"), "package custom\ntype Label string\n")
+			writeFile(t, filepath.Join(dir, "custom", "label.go"), "package custom\nimport \"gorm.io/gorm\"\ntype Label string\ntype DeletedAt = gorm.DeletedAt\n")
 			params := &CmdParams{
 				DB: "sqlite", DSN: dsn, OnlyModel: onlyModel,
 				OutPath: filepath.Join(dir, "query"), ModelPkgName: filepath.Join(dir, "model"),
 				WithDefaultQuery: true, WithQueryInterface: true,
 				FieldNullable:  true,
-				DataTypeMap:    map[string]string{"text": "ct.Label", "integer": "uint32"},
+				FieldCoverable: true,
+				SoftDelete:     tc.softDelete,
+				DataTypeMap:    map[string]string{"text": "ct.Label", "integer": "uint32", "datetime": "ct.Label"},
 				ImportPkgPaths: []string{`ct "example.com/generated/custom"`},
 			}
 			// Cover all-table discovery in model mode and selection in query mode.
@@ -181,6 +208,9 @@ func TestGenerateWithTypeMapping(t *testing.T) {
 			})
 			if fields["ID"] != "uint32" || fields["Age"] != "uint32" || fields["Name"] != "ct.Label" || fields["Active"] != "int32" || fields["Optional"] != "*ct.Label" || fields["Note"] != "*[]byte" {
 				t.Fatalf("unexpected generated fields: %v", fields)
+			}
+			if fields[tc.field] != tc.wantType || fields["CreatedAt"] != "*ct.Label" {
+				t.Fatalf("unexpected soft delete or timestamp types: %v", fields)
 			}
 			_, queryErr := os.Stat(filepath.Join(dir, "query", "gen.go"))
 			_, ignoredErr := os.Stat(filepath.Join(dir, "model", "ignored.gen.go"))

@@ -40,6 +40,7 @@ const (
 type CmdParams struct {
 	// These extensions are loaded exclusively from YAML; no flags are registered.
 	DataTypeMap         map[string]string `yaml:"dataTypeMap"`
+	SoftDelete          *SoftDeleteConfig `yaml:"softDelete"`
 	ImportPkgPaths      []string          `yaml:"importPkgPaths"`
 	DSN                 string            `yaml:"dsn"`          // consult[https://gorm.io/docs/connecting_to_the_database.html]"
 	DB                  string            `yaml:"db"`           // input mysql or postgres or sqlite or sqlserver. consult[https://gorm.io/docs/connecting_to_the_database.html]
@@ -72,6 +73,9 @@ func (c *CmdParams) revise() *CmdParams {
 	}
 	if c.OutPath == "" {
 		c.OutPath = defaultQueryPath
+	}
+	if c.SoftDelete == nil {
+		c.SoftDelete = &SoftDeleteConfig{Column: "deleted_at", Type: "gorm.DeletedAt"}
 	}
 	if len(c.Tables) == 0 {
 		return c
@@ -275,6 +279,9 @@ func run(args []string) (err error) {
 	g.UseDB(db)
 	g.WithDataTypeMap(config.dataTypeMapping())
 	g.WithImportPkgPath(config.ImportPkgPaths...)
+	if config.SoftDelete != nil {
+		g.WithOpts(gen.FieldModify(config.softDeleteField))
+	}
 
 	models, err := genModels(g, db, config.Tables)
 	if err != nil {

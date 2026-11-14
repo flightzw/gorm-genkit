@@ -12,6 +12,12 @@ database:
   fieldNullable: false
   fieldWithTypeTag: true
 
+  # 仅支持配置文件；gorm.DeletedAt 仅应用于时间列，非时间列使用普通映射。
+  # 未显式配置 softDelete 时，默认使用以下配置。
+  softDelete:
+    column: deleted_at
+    type: gorm.DeletedAt
+
   # 仅支持配置文件；键必须与驱动返回的 DatabaseTypeName() 完全一致。
   dataTypeMap:
     bigint: int64

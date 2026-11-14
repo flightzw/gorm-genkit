@@ -162,6 +162,35 @@ database:
 - 映射对所选表中所有同数据库类型的字段生效，沿用 Gen 的可空指针、默认值指针及 unsigned 等后续处理规则。
 - 类型语法在加载配置时校验。包是否存在、类型是否实现必要的数据库接口，由目标项目负责；生成代码使用的依赖需要在目标项目中安装。
 
+## 软删除字段类型
+
+未显式配置 `softDelete` 时，默认对时间类型的 `deleted_at` 列使用 `gorm.DeletedAt`，
+优先于 `dataTypeMap`；非时间列继续使用 `dataTypeMap`，没有匹配项时使用 Gen 默认映射。
+该默认行为同时适用于 YAML 和纯命令行模式。
+通过仅限 YAML 的 `softDelete` 配置，可以覆盖软删除列名及 Go 类型：
+
+```yaml
+database:
+  db: "${GENKIT_DB}"
+  dsn: "${GENKIT_DSN}"
+  softDelete:
+    column: deleted_at
+    type: gorm.DeletedAt
+  dataTypeMap:
+    datetime: time.Time
+```
+
+此例中，时间类型的 `deleted_at` 最终生成 `gorm.DeletedAt`，其他 `datetime` 列仍按 `dataTypeMap` 生成。
+
+- `column` 是数据库列名，省略或设为空字符串时默认为 `deleted_at`；按列名精确匹配，对所有生成的表生效。表中不存在该列时不添加字段。
+- `type` 必填，支持与 `dataTypeMap` 相同的 Go 类型表达式；自定义包通过 `importPkgPaths` 导入。例如将 `column` 改为 `archived_at`、`type` 改为 `custom.DeletedAt`，即可覆盖其他列名和类型。
+- `gorm.DeletedAt`（包括指针形式）会根据数据库原始列类型检查兼容性，不根据 `dataTypeMap` 映射后的 Go 类型判断。支持各数据库的日期、日期时间及时间戳类型，例如 MySQL 的 `date/datetime/timestamp`、PostgreSQL 的 `date/timestamp/timestamptz`、SQL Server 的 `date/datetime/datetime2/smalldatetime/datetimeoffset`、SQLite 的 `date/datetime/timestamp`、ClickHouse 的 `Date/Date32/DateTime/DateTime64`（含 Nullable 等包装）。
+- 整数、文本、布尔、未知类型及仅含时分秒的 `TIME` 列不应用 `gorm.DeletedAt`，而是保留普通类型映射及指针规则。SQL Server 的 `timestamp/rowversion` 是二进制类型，也不视为时间列。例如 `deleted_at` 为 `bigint` 且配置 `bigint: uint64` 时，生成 `uint64`（可空时按配置生成指针）。
+- 显式配置的其他类型（如 `soft_delete.DeletedAt` 或自定义类型）仍按配置生成，以支持整数或标记位软删除；工具不推断任意自定义类型的数据库兼容性。MySQL 时间列仍需正确设置 DSN 的 `parseTime=True`，列类型检查不代替驱动连接配置。
+- 配置的类型作为最终字段类型，优先于 `dataTypeMap`、Gen 默认软删除类型转换及 `fieldNullable` / `fieldCoverable` / `fieldSignable`。需要指针时显式填写 `*gorm.DeletedAt`，工具不会再自动追加指针。
+- 省略 `softDelete` 或设为 `null` 时，使用默认配置 `{column: deleted_at, type: gorm.DeletedAt}`。显式配置时 `type` 必填，不能使用空对象 `{}`；配置错误或 Go 类型语法错误会在加载 YAML 时返回错误。
+- 此配置指定生成字段的类型。实际软删除行为由该类型及 GORM 的支持决定；`gorm.DeletedAt` 可直接使用，自定义类型需自行实现对应行为。
+
 ## 兼容的参数与配置
 
 下表字段都位于 YAML 的 `database` 下，也提供同名命令行参数（例如 `-onlyModel`）。
