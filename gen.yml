@@ -1,0 +1,21 @@
+version: "1"
+database:
+  db: mysql
+  dsn: "root:password@tcp(127.0.0.1:3306)/example?charset=utf8mb4&parseTime=True&loc=Local"
+  tables: [] # 留空生成所有表
+  onlyModel: false
+  outPath: ./dao/query
+  modelPkgName: model
+  withDefaultQuery: true
+  withQueryInterface: true
+  fieldNullable: false
+  fieldWithTypeTag: true
+
+  # 仅支持配置文件；键必须与驱动返回的 DatabaseTypeName() 完全一致。
+  dataTypeMap:
+    bigint: int64
+    decimal: decimal.Decimal
+    json: datatypes.JSON
+  importPkgPaths:
+    - github.com/shopspring/decimal
+    - gorm.io/datatypes
