@@ -4,21 +4,136 @@
 实现的数据库代码生成工具，支持 MySQL、PostgreSQL、SQLite、SQL Server 和 ClickHouse。
 可以生成模型、查询代码及查询测试，并通过 YAML 配置数据库字段类型到 Go 类型的映射。
 
+## 安装
+
+需要 Go 1.26.8 或更新版本。安装工具本身不强制启用 CGO。
+仅使用 MySQL、PostgreSQL、SQL Server 或 ClickHouse 时，可以用 `CGO_ENABLED=0` 安装。
+
+在本仓库根目录安装：
+
 ```bash
-go build -o genkit ./cmd/genkit
-./genkit -c gen.yml
+go install ./cmd/genkit
 ```
 
-也可以只使用命令行参数：
+仓库代码推送到可访问的 GitHub 仓库后，也可从任意目录安装：
 
 ```bash
-go run ./cmd/genkit -db sqlite -dsn ./example.db -tables users,orders -outPath ./dao/query
-go run ./cmd/genkit -h
+go install github.com/flightzw/gorm-genkit/cmd/genkit@latest
 ```
 
-指定 `-c` 时，配置文件优先，其他命令行参数不参与合并；未配置的字段使用默认值。
+如果需要生成 **SQLite** 数据库的代码，必须在构建或安装工具时启用 CGO，
+并在构建机器上安装 C 编译器（如 GCC 或 Clang）：
+
+```bash
+CGO_ENABLED=1 go install ./cmd/genkit
+# 从远程安装时同样在 go install 命令前设置 CGO_ENABLED=1
+```
+
+`CGO_ENABLED=0` 也能安装成功，但生成的可执行文件不支持连接 SQLite。
+运行已安装的工具时再设置 `CGO_ENABLED=1` 不会改变其能力，需要重新构建或安装。
+可用 `go env CGO_ENABLED` 查看当前构建环境的默认设置。
+
+可执行文件安装到 `go env GOBIN` 指定的目录；未设置 `GOBIN` 时，默认安装到
+`$(go env GOPATH)/bin`。将对应目录加入 `PATH`。例如，使用默认安装目录时：
+
+```bash
+export PATH="$(go env GOPATH)/bin:$PATH"
+genkit -h
+```
+
+可将上述 `export` 写入 shell 配置文件，使其在后续终端会话中生效。安装完成后，可在目标 Go 项目中直接使用 `genkit`。
+
+## 安装后使用
+
+进入需要生成代码的 Go 项目根目录，参考 [gen.yml](gen.yml) 创建项目自己的配置文件，
+填写数据库连接信息、所选表和输出目录。例如：
+
+```yaml
+version: "1"
+database:
+  db: mysql
+  dsn: "root:password@tcp(127.0.0.1:3306)/example?charset=utf8mb4&parseTime=True&loc=Local"
+  tables: [users, orders]
+  outPath: ./dao/query
+  modelPkgName: model
+  withDefaultQuery: true
+```
+
+保存为 `gen.yml` 后执行：
+
+```bash
+genkit -c gen.yml
+```
+
+上述配置将模型生成到 `./dao/model`，将查询代码生成到 `./dao/query`，查询入口文件默认为 `gen.go`。
+`tables` 留空或设为 `[]` 时生成所有表。生成代码及自定义类型所需的依赖，应安装在目标 Go 项目中。
+
+也可以直接使用命令行参数。以下示例读取已有的 SQLite 数据库：
+
+```bash
+# 生成指定表的模型和查询代码
+genkit -db sqlite -dsn ./example.db -tables users,orders -outPath ./dao/query
+
+# 只生成模型
+genkit -db sqlite -dsn ./example.db -tables users,orders -onlyModel -outPath ./dao/query
+
+# 查看全部参数
+genkit -h
+```
+
+指定 `-c` 时，配置文件优先，其他生成参数不参与合并；`-envFile` 仍生效。
+连接字段为空时先从环境变量补充，其他未配置字段使用默认值。
 所有相对路径（包括 SQLite DSN、输出目录和模板路径）均相对于运行命令时的工作目录。
 配置文件使用上游的 `version` / `database` 结构；未知字段、重复键和无效类型配置会报错。
+
+如果需要从源码运行，也可在本仓库根目录执行：
+
+```bash
+go run ./cmd/genkit -c gen.yml
+```
+
+从源码运行 SQLite 配置时，使用 `CGO_ENABLED=1 go run ./cmd/genkit -c gen.yml`。
+
+## 使用 .env 配置数据库连接
+
+工具通过 [godotenv](https://github.com/joho/godotenv) 默认加载工作目录下的 `.env`。
+可参考 [.env.example](.env.example) 创建文件：
+
+```dotenv
+GENKIT_DB=mysql
+GENKIT_DSN='root:password@tcp(127.0.0.1:3306)/example?charset=utf8mb4&parseTime=True&loc=Local'
+```
+
+不指定连接参数时，直接使用上述环境变量：
+
+```bash
+genkit -tables users,orders -outPath ./dao/query
+```
+
+也可以在 YAML 的 `db`、`dsn` 字段中引用任意环境变量：
+
+```yaml
+version: "1"
+database:
+  db: "${GENKIT_DB}"
+  dsn: "${GENKIT_DSN}"
+  tables: [users, orders]
+  outPath: ./dao/query
+  modelPkgName: model
+```
+
+```bash
+genkit -c gen.yml
+genkit -envFile ./config/.env.local -c gen.yml
+genkit -envFile="" -c gen.yml # 仅使用系统环境变量，不加载文件
+```
+
+- 优先使用选定配置来源（`-c` 指定的 YAML，或命令行）中的连接字段；空字段分别回退到 `GENKIT_DB`、`GENKIT_DSN`，数据库类型最终默认为 `mysql`，DSN 仍为空时报错。
+- 系统中已有的环境变量优先于 `.env` 中的值，不会被覆盖。
+- 默认 `.env` 不存在时继续运行；显式指定的文件不存在、文件无法读取或格式错误时，返回错误。
+- `-envFile` 相对路径基于工作目录，不基于 YAML 文件目录。安装工具不会自动创建或安装 `.env` 文件。
+- 仅对选定配置的 `db`、`dsn` 字段展开 `${变量名}`；未定义的变量会报错，不展开其他 YAML 字段或 `$NAME`。先解析 YAML 再展开连接字段，变量值中的冒号、引号等不会改变 YAML 结构。
+- `.env` 内的变量引用遵循 godotenv 语法；密码含字面量 `$` 时，建议将 `.env` 值用单引号包围。本仓库已忽略 `.env` 和 `.env.*`，保留 `.env.example` 作为模板。
 
 ## 类型映射
 
@@ -53,8 +168,8 @@ database:
 
 | 字段 | 默认值 | 用途 |
 | --- | --- | --- |
-| `dsn` | 空，必填 | 数据库连接字符串 |
-| `db` | `mysql` | `mysql` / `postgres` / `sqlite` / `sqlserver` / `clickhouse` |
+| `dsn` | `GENKIT_DSN`，最终不能为空 | 数据库连接字符串，支持 `${变量名}` |
+| `db` | `GENKIT_DB` 或 `mysql` | `mysql` / `postgres` / `sqlite` / `sqlserver` / `clickhouse`，支持 `${变量名}` |
 | `tables` | 所有表 | YAML 使用数组；命令行使用逗号分隔，忽略首尾空白及空项 |
 | `onlyModel` | `false` | 仅生成模型 |
 | `outPath` | `./dao/query` | 查询代码输出目录 |
@@ -82,6 +197,7 @@ go vet ./...
 ```
 
 集成测试创建临时 SQLite 数据库，从 YAML 加载映射，验证模型及查询输出，
-并编译生成的代码（包括带别名的自定义类型包）。SQLite 驱动依赖 CGO，构建和测试需要 C 编译器。
+并编译生成的代码（包括带别名的自定义类型包）。这部分集成测试需要启用 CGO 并安装 C 编译器。
+`CGO_ENABLED=0 go test ./...` 可以运行其他测试，但会跳过 SQLite 集成测试。
 
 本项目采用 MIT 许可，并保留上游 GORM Gen 的版权声明，详见 [LICENSE](LICENSE)。

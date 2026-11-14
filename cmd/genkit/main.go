@@ -168,11 +168,12 @@ func parseArgs(fs *flag.FlagSet, args []string) (*CmdParams, error) {
 	if fs == nil {
 		return nil, fmt.Errorf("flag set cannot be nil")
 	}
-	var configPath, tableList string
+	var configPath, tableList, envFile string
 	params := &CmdParams{}
-	fs.StringVar(&configPath, "c", "", "path to gen.yml (takes precedence over other flags)")
+	fs.StringVar(&configPath, "c", "", "path to gen.yml (takes precedence over generation flags)")
+	fs.StringVar(&envFile, "envFile", ".env", "dotenv file path; empty disables file loading")
 	fs.StringVar(&params.DSN, "dsn", "", "database connection string")
-	fs.StringVar(&params.DB, "db", string(dbMySQL), "mysql|postgres|sqlite|sqlserver|clickhouse")
+	fs.StringVar(&params.DB, "db", "", "mysql|postgres|sqlite|sqlserver|clickhouse (default mysql)")
 	fs.StringVar(&params.OutPath, "outPath", defaultQueryPath, "query output directory")
 	fs.StringVar(&params.OutFile, "outFile", "", "query code file name, default: gen.go")
 	fs.StringVar(&params.UnitTestTemplate, "unitTestTemplate", "", "custom unit test template file path")
@@ -197,11 +198,26 @@ func parseArgs(fs *flag.FlagSet, args []string) (*CmdParams, error) {
 	if fs.NArg() != 0 {
 		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
 	}
-	if configPath != "" {
-		return loadConfig(configPath)
+	var explicitEnvFile bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "envFile" {
+			explicitEnvFile = true
+		}
+	})
+	if err := loadEnvFile(envFile, explicitEnvFile); err != nil {
+		return nil, err
 	}
-	if tableList != "" {
+	if configPath != "" {
+		var err error
+		params, err = loadConfig(configPath)
+		if err != nil {
+			return nil, err
+		}
+	} else if tableList != "" {
 		params.Tables = strings.Split(tableList, ",")
+	}
+	if err := params.resolveConnectionEnv(); err != nil {
+		return nil, err
 	}
 	return params, nil
 }

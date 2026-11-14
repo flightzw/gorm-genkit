@@ -3,6 +3,7 @@ module github.com/flightzw/gorm-genkit
 go 1.26.8
 
 require (
+	github.com/joho/godotenv v1.5.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/driver/clickhouse v0.6.0
 	gorm.io/driver/mysql v1.5.7

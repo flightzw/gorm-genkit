@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"go/ast"
-	"go/build"
 	"go/format"
 	"go/parser"
 	"go/token"
@@ -31,6 +30,7 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestConfigAndFlags(t *testing.T) {
+	unsetTestEnv(t, "GENKIT_DB", "GENKIT_DSN")
 	path := filepath.Join(t.TempDir(), "gen.yml")
 	writeFile(t, path, "database:\n  db: sqlite\n  dsn: config.db\n  tables: [' users ', '']\n  dataTypeMap:\n    text: custom.Label\n  importPkgPaths: [example.com/custom]\n")
 	params, err := parseArgs(flag.NewFlagSet("test", flag.ContinueOnError), []string{"-c", path, "-db", "mysql", "-dsn", "ignored"})
@@ -62,6 +62,7 @@ func TestConfigAndFlags(t *testing.T) {
 }
 
 func TestInvalidConfig(t *testing.T) {
+	unsetTestEnv(t, "GENKIT_DB", "GENKIT_DSN")
 	for name, content := range map[string]string{
 		"missing database":  "version: '1'",
 		"invalid yaml":      "database: [",
@@ -101,9 +102,6 @@ func TestInvalidConfig(t *testing.T) {
 // Exercise the entire file-config -> schema -> generated model/query flow, then
 // compile the generated code in a separate module, including a custom package.
 func TestGenerateWithTypeMapping(t *testing.T) {
-	if !build.Default.CgoEnabled {
-		t.Skip("SQLite integration requires CGO_ENABLED=1 and a C compiler")
-	}
 	for _, onlyModel := range []bool{true, false} {
 		name := "query"
 		if onlyModel {
@@ -114,6 +112,9 @@ func TestGenerateWithTypeMapping(t *testing.T) {
 			dsn := filepath.Join(dir, "schema.db")
 			db, err := gorm.Open(sqlite.Open(dsn))
 			if err != nil {
+				if strings.Contains(err.Error(), "Binary was compiled with 'CGO_ENABLED=0'") {
+					t.Skip("SQLite integration requires CGO_ENABLED=1 and a C compiler")
+				}
 				t.Fatal(err)
 			}
 			for _, statement := range []string{
@@ -155,7 +156,12 @@ func TestGenerateWithTypeMapping(t *testing.T) {
 			}
 			path := filepath.Join(dir, "gen.yml")
 			writeFile(t, path, string(content))
-			if err := run([]string{"-c", path}); err != nil {
+			unsetTestEnv(t, "GENKIT_TEST_DB", "GENKIT_TEST_DSN")
+			envPath := filepath.Join(dir, ".env")
+			writeFile(t, envPath, "GENKIT_TEST_DB=sqlite\nGENKIT_TEST_DSN='"+dsn+"'\n")
+			// Resolve placeholders from dotenv before connecting to the database.
+			writeFile(t, path, strings.ReplaceAll(strings.ReplaceAll(string(content), dsn, "${GENKIT_TEST_DSN}"), "db: sqlite", "db: ${GENKIT_TEST_DB}"))
+			if err := run([]string{"-c", path, "-envFile", envPath}); err != nil {
 				t.Fatal(err)
 			}
 			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, "model", "users.gen.go"), nil, 0)

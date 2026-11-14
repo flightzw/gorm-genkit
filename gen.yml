@@ -1,5 +1,6 @@
 version: "1"
 database:
+  # 可改为 db: "${GENKIT_DB}" 和 dsn: "${GENKIT_DSN}"，从 .env 或系统环境读取。
   db: mysql
   dsn: "root:password@tcp(127.0.0.1:3306)/example?charset=utf8mb4&parseTime=True&loc=Local"
   tables: [] # 留空生成所有表
